@@ -70,25 +70,72 @@ jobs:
           python -c "import json; data=json.load(open('reports/bandit-report.json')); print(f'Found {len(data.get(\"results\", []))} issues')"
         fi
 
+
   dependency-check:
     runs-on: ubuntu-latest
     name: OWASP Dependency Check
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Run OWASP Dependency-Check
-      uses: dependency-check/Dependency-Check_Action@main
-      with:
-        project: 'secure-rest-api'
-        path: '.'
-        format: 'HTML'
-        out: 'reports'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Upload Dependency-Check Report
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: dependency-check-report
-        path: reports/dependency-check-report.html
+      - name: Install project dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Create reports directory
+        run: mkdir -p reports/dependency-check
+
+      - name: Show installed dependencies
+        run: |
+          python -m pip list
+          python -m pip freeze > reports/installed-packages.txt
+          python -m pipdeptree --warn silence || true
+        # pipdeptree is installed in the next step if needed
+
+      - name: Install SCA tools
+        run: |
+          python -m pip install cyclonedx-bom pip-audit pipdeptree
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          cyclonedx-py environment \
+            --output-format JSON \
+            --output-file reports/bom.json
+
+          python -c "import json; d=json.load(open('reports/bom.json')); print('SBOM components:', len(d.get('components', [])))"
+
+      - name: Audit Python dependencies
+        continue-on-error: true
+        run: |
+          pip-audit \
+            -r requirements.txt \
+            --format=json \
+            --output=reports/pip-audit-report.json
+
+      - name: Run OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: "secure-rest-api"
+          path: "reports/bom.json"
+          format: "HTML"
+          out: "reports/dependency-check"
+
+      - name: Upload SCA reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-check-report
+          path: |
+            reports/dependency-check/
+            reports/bom.json
+            reports/installed-packages.txt
+            reports/pip-audit-report.json
+          if-no-files-found: warn
